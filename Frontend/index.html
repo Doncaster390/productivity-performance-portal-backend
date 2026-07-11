@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Productivity &amp; Performance Registry</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Special+Elite&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+
+</head>
+<body>
+<div class="page">
+
+  <header class="masthead">
+    <div class="masthead-row">
+      <div class="wordmark">
+        <h1>Productivity &amp; Performance Registry</h1>
+        <span class="kicker" id="entryCount">0 entries on file</span>
+      </div>
+      <button class="staff-toggle" id="staffToggleBtn" type="button">Staff login</button>
+    </div>
+    <p class="tagline">Decks, dashboards, and workbooks are filed here for review, then published to the registry once approved.</p>
+  </header>
+
+  <div id="banner"></div>
+
+  <section id="staffPanel" aria-label="Staff panel">
+    <div class="card" id="loginCard">
+      <p class="section-title">Staff login</p>
+      <form id="loginForm" class="login-row">
+        <div class="field">
+          <label for="pinInput">Admin PIN</label>
+          <input type="password" id="pinInput" autocomplete="current-password" placeholder="Enter PIN" required>
+        </div>
+        <button class="btn" type="submit" id="loginBtn">Log in</button>
+      </form>
+    </div>
+
+    <div class="card" id="adminCard" style="display:none;">
+      <div class="staff-header">
+        <p class="section-title" style="margin:0;">Pending review</p>
+        <div>
+          <span class="who">Signed in as staff</span>
+          &nbsp;·&nbsp;
+          <button class="logout-link" id="logoutBtn" type="button">Log out</button>
+        </div>
+      </div>
+      <ul class="queue-list" id="queueList"></ul>
+      <p class="empty-note" id="queueEmpty" style="display:none;">Nothing waiting on review.</p>
+    </div>
+  </section>
+
+  <section class="card" aria-label="Submit a new entry">
+    <p class="section-title">File a new entry</p>
+    <form id="submitForm">
+      <div class="submit-grid">
+        <div class="field">
+          <label for="titleInput">Title</label>
+          <input type="text" id="titleInput" placeholder="Q3 sales report" required>
+        </div>
+        <div class="field">
+          <label for="urlInput">Link</label>
+          <input type="url" id="urlInput" placeholder="https://example.com/report.pptx" required>
+        </div>
+      </div>
+      <div style="margin-top:14px;">
+        <button class="btn" type="submit" id="submitBtn">Submit for review</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="card" aria-label="Published registry" style="margin-top:20px;">
+    <p class="section-title">Published registry</p>
+    <ul class="registry-grid" id="registryGrid"></ul>
+    <p class="empty-note" id="registryEmpty" style="display:none;">No entries have cleared review yet. Filed items appear here once approved.</p>
+  </section>
+
+  <div class="foot">
+    <small>Connected to <span id="apiBaseLabel" style="font-family:var(--font-mono);"></span></small>
+    <button class="settings-toggle" id="settingsToggleBtn" type="button">Change API address</button>
+  </div>
+  <div id="settingsRow">
+    <div class="field">
+      <label for="apiBaseInput">API base URL</label>
+      <input type="text" id="apiBaseInput" placeholder="http://localhost:5000" style="min-width:260px;">
+    </div>
+    <button class="btn btn-ghost" id="saveApiBaseBtn" type="button">Save</button>
+  </div>
+
+</div>
+
+<script src="app.js"></script>
+
+</body>
+</html>
