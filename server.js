@@ -76,7 +76,7 @@ app.post('/api/admin/login', async (req, res) => {
     }
 
     // For demo: simple PIN check (change this in production!)
-    const adminPin = '1234';
+    const adminPin = '0390';
     
     if (password === adminPin) {
       const token = jwt.sign(
