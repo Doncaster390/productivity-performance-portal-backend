@@ -19,8 +19,9 @@ are returned as local ISO date-times. Uploads are limited to 10,000 rows.
 
 ## Configuration
 
-Copy `.env.example` to `.env` and set database credentials, `JWT_SECRET`,
-`ADMIN_USERNAME`, `ADMIN_PIN`, and `ALLOWED_ORIGINS`. `ALLOWED_ORIGINS` is a comma-separated allowlist
+Copy `.env.example` to `.env` and set database credentials, `DB_SSL`, `JWT_SECRET`,
+`ADMIN_USERNAME`, `ADMIN_PIN`, and `ALLOWED_ORIGINS`. Set `DB_SSL=true` for Supabase.
+`ALLOWED_ORIGINS` is a comma-separated allowlist
 and must include the GitHub Pages dashboard origin:
 
 ```text

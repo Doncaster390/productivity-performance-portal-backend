@@ -11,16 +11,5 @@
       "src": "/(.*)",
       "dest": "server.js"
     }
-  ],
-  "env": {
-    "DB_USER": "@db_user",
-    "DB_PASSWORD": "@db_password",
-    "DB_HOST": "@db_host",
-    "DB_PORT": "@db_port",
-    "DB_NAME": "@db_name",
-    "JWT_SECRET": "@jwt_secret",
-    "ADMIN_USERNAME": "@admin_username",
-    "ADMIN_PIN": "@admin_pin",
-    "ALLOWED_ORIGINS": "@allowed_origins"
-  }
+  ]
 }
