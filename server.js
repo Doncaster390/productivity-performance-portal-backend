@@ -173,19 +173,20 @@ function normaliseScheduleRows(rows) {
 // Admin Login
 app.post('/api/admin/login', async (req, res) => {
   try {
-    const { password } = req.body;
+    const { username, password } = req.body;
     
-    if (!password) {
-      return res.status(400).json({ error: 'Password required' });
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Username and password required' });
     }
 
+    const adminUsername = process.env.ADMIN_USERNAME;
     const adminPin = process.env.ADMIN_PIN;
-    if (!adminPin) {
-      console.error('ADMIN_PIN is not configured');
+    if (!adminUsername || !adminPin) {
+      console.error('ADMIN_USERNAME or ADMIN_PIN is not configured');
       return res.status(500).json({ error: 'Admin login is not configured' });
     }
     
-    if (password === adminPin) {
+    if (username === adminUsername && password === adminPin) {
       const token = jwt.sign(
         { admin: true, timestamp: Date.now() },
         process.env.JWT_SECRET,
