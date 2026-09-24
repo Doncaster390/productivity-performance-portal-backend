@@ -17,6 +17,20 @@ Each submitted row must include `name`, `role`, `type` (`DC` or `CDC`), `date`,
 `start`, `end`, and `hours`. Dates are returned as `YYYY-MM-DD`; start and end values
 are returned as local ISO date-times. Uploads are limited to 10,000 rows.
 
+## Safety Badges API
+
+Safety badge data is stored durably for dashboard and card-display clients, rather
+than in a particular browser's local storage.
+
+| Route | Access | Purpose |
+| --- | --- | --- |
+| `GET /api/safety-badges` | Public | Returns `{ version, updated_at, badges }`. |
+| `PUT /api/admin/safety-badges` | Admin token | Atomically replaces the badge map with `{ "badges": { ... } }`. |
+
+Each badge-map key is a non-empty employee name of at most 255 characters. The map is
+limited to 10,000 employees. Values may contain only boolean `firstAid`, `fireMarshal`,
+and `workingAtHeights` properties; omitted properties are returned as `false`.
+
 ## Configuration
 
 Copy `.env.example` to `.env` and set `DATABASE_URL`, `STORAGE_URL`, or individual
