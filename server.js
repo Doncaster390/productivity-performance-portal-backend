@@ -32,8 +32,9 @@ app.use(cors({
 app.use(express.json({ limit: '2mb' }));
 
 // Database Connection
-const pool = process.env.DATABASE_URL
-  ? new Pool({ connectionString: process.env.DATABASE_URL })
+const databaseUrl = process.env.DATABASE_URL || process.env.STORAGE_URL;
+const pool = databaseUrl
+  ? new Pool({ connectionString: databaseUrl })
   : new Pool({
       user: process.env.DB_USER,
       password: process.env.DB_PASSWORD,
