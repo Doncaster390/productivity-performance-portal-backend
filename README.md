@@ -19,8 +19,13 @@ are returned as local ISO date-times. Uploads are limited to 10,000 rows.
 
 ## Configuration
 
-Copy `.env.example` to `.env` and set database credentials, `JWT_SECRET`,
-`ADMIN_USERNAME`, `ADMIN_PIN`, and `ALLOWED_ORIGINS`. `ALLOWED_ORIGINS` is a comma-separated allowlist
+Copy `.env.example` to `.env` and set `DATABASE_URL`, `STORAGE_URL`, or individual
+database credentials, `DB_SSL`, `JWT_SECRET`, `ADMIN_USERNAME`, `ADMIN_PIN`, and
+`ALLOWED_ORIGINS`. Vercel's Neon Postgres integration provides `DATABASE_URL` by
+default; a custom `STORAGE` prefix provides `STORAGE_URL`, which this backend also
+supports. Set
+`DB_SSL=true` for Supabase or another individual managed database connection.
+`ALLOWED_ORIGINS` is a comma-separated allowlist
 and must include the GitHub Pages dashboard origin:
 
 ```text

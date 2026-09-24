@@ -32,13 +32,17 @@ app.use(cors({
 app.use(express.json({ limit: '2mb' }));
 
 // Database Connection
-const pool = new Pool({
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  host: process.env.DB_HOST,
-  port: process.env.DB_PORT,
-  database: process.env.DB_NAME,
-});
+const databaseUrl = process.env.DATABASE_URL || process.env.STORAGE_URL;
+const pool = databaseUrl
+  ? new Pool({ connectionString: databaseUrl })
+  : new Pool({
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      host: process.env.DB_HOST,
+      port: process.env.DB_PORT,
+      database: process.env.DB_NAME,
+      ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : undefined,
+    });
 
 pool.on('error', (err) => {
   console.error('Unexpected error on idle client', err);
