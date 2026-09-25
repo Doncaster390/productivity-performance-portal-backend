@@ -25,11 +25,27 @@ than in a particular browser's local storage.
 | Route | Access | Purpose |
 | --- | --- | --- |
 | `GET /api/safety-badges` | Public | Returns `{ version, updated_at, badges }`. |
-| `PUT /api/admin/safety-badges` | Admin token | Atomically replaces the badge map with `{ "badges": { ... } }`. |
+| `PUT /api/admin/safety-badges` | Admin token | Atomically replaces the badges with `{ "badges": { ... } }` and returns the canonical badges. |
 
-Each badge-map key is a non-empty employee name of at most 255 characters. The map is
-limited to 10,000 employees. Values may contain only boolean `firstAid`, `fireMarshal`,
-and `workingAtHeights` properties; omitted properties are returned as `false`.
+The public response and admin request use this canonical shape:
+
+```json
+{
+  "badges": {
+    "firstAid": ["Ada Lovelace"],
+    "fireMarshal": ["Grace Hopper"],
+    "workingAtHeight": ["Ada Lovelace"]
+  }
+}
+```
+
+The `badges` object must contain exactly `firstAid`, `fireMarshal`, and
+`workingAtHeight`; each field is an array of employee names. Names must be non-empty
+trimmed strings of at most 255 characters. Duplicate names within a list are removed,
+and each list may contain at most 10,000 submitted names. For a non-breaking migration,
+the admin endpoint also accepts the prior employee-name map with boolean `firstAid`,
+`fireMarshal`, and `workingAtHeights` fields, but all responses use the canonical list
+format.
 
 ## Configuration
 
