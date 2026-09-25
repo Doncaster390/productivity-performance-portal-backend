@@ -186,52 +186,117 @@ function isPlainObject(value) {
   return prototype === Object.prototype || prototype === null;
 }
 
-function normaliseSafetyBadges(badges) {
-  if (!isPlainObject(badges)) {
-    throw new Error('Safety badges must be an object');
+const SAFETY_BADGE_FIELDS = ['firstAid', 'fireMarshal', 'workingAtHeight'];
+const LEGACY_SAFETY_BADGE_FIELDS = ['firstAid', 'fireMarshal', 'workingAtHeights'];
+const MAX_SAFETY_BADGE_NAMES = 10000;
+
+function emptySafetyBadges() {
+  return {
+    firstAid: [],
+    fireMarshal: [],
+    workingAtHeight: []
+  };
+}
+
+function normaliseSafetyBadgeNames(names, field) {
+  if (!Array.isArray(names)) {
+    throw new Error(`Safety badge ${field} must be an array`);
+  }
+  if (names.length > MAX_SAFETY_BADGE_NAMES) {
+    throw new Error(`Safety badge ${field} cannot contain more than ${MAX_SAFETY_BADGE_NAMES} names`);
   }
 
+  const normalised = [];
+  const seen = new Set();
+  for (const name of names) {
+    if (typeof name !== 'string') {
+      throw new Error(`Safety badge ${field} names must be strings`);
+    }
+
+    const trimmedName = name.trim();
+    if (!trimmedName || trimmedName.length > 255) {
+      throw new Error(`Safety badge ${field} names must be between 1 and 255 characters`);
+    }
+    if (!seen.has(trimmedName)) {
+      seen.add(trimmedName);
+      normalised.push(trimmedName);
+    }
+  }
+
+  return normalised;
+}
+
+function isCanonicalSafetyBadgePayload(badges) {
+  return SAFETY_BADGE_FIELDS.some(
+    (field) => Object.prototype.hasOwnProperty.call(badges, field) && Array.isArray(badges[field])
+  );
+}
+
+function normaliseCanonicalSafetyBadges(badges) {
+  const fields = Object.keys(badges);
+  if (
+    fields.length !== SAFETY_BADGE_FIELDS.length ||
+    fields.some((field) => !SAFETY_BADGE_FIELDS.includes(field))
+  ) {
+    throw new Error('Safety badges must contain exactly firstAid, fireMarshal, and workingAtHeight');
+  }
+
+  return SAFETY_BADGE_FIELDS.reduce((normalised, field) => {
+    normalised[field] = normaliseSafetyBadgeNames(badges[field], field);
+    return normalised;
+  }, {});
+}
+
+function normaliseLegacySafetyBadges(badges) {
   const entries = Object.entries(badges);
-  if (entries.length > 10000) {
-    throw new Error('A safety badge upload cannot contain more than 10,000 employees');
+  if (entries.length > MAX_SAFETY_BADGE_NAMES) {
+    throw new Error(`A safety badge upload cannot contain more than ${MAX_SAFETY_BADGE_NAMES} employees`);
   }
 
-  const normalised = Object.create(null);
-  const allowedFields = ['firstAid', 'fireMarshal', 'workingAtHeights'];
-
+  const converted = emptySafetyBadges();
+  const employeeNames = new Set();
   for (const [employeeName, badge] of entries) {
     const name = employeeName.trim();
     if (!name || name.length > 255) {
       throw new Error('Each safety badge employee name must be between 1 and 255 characters');
     }
-    if (Object.prototype.hasOwnProperty.call(normalised, name)) {
+    if (employeeNames.has(name)) {
       throw new Error('Safety badge employee names must be unique after trimming');
     }
+    employeeNames.add(name);
+
     if (!isPlainObject(badge)) {
       throw new Error('Each safety badge must be an object');
     }
 
     const fields = Object.keys(badge);
-    if (fields.some((field) => !allowedFields.includes(field))) {
-      throw new Error('Safety badges may only contain firstAid, fireMarshal, and workingAtHeights');
+    if (fields.some((field) => !LEGACY_SAFETY_BADGE_FIELDS.includes(field))) {
+      throw new Error('Safety badge legacy values may only contain firstAid, fireMarshal, and workingAtHeights');
     }
     if (fields.some((field) => typeof badge[field] !== 'boolean')) {
-      throw new Error('Safety badge values must be booleans');
+      throw new Error('Safety badge legacy values must be booleans');
     }
 
-    Object.defineProperty(normalised, name, {
-      value: {
-        firstAid: Object.prototype.hasOwnProperty.call(badge, 'firstAid') ? badge.firstAid : false,
-        fireMarshal: Object.prototype.hasOwnProperty.call(badge, 'fireMarshal') ? badge.fireMarshal : false,
-        workingAtHeights: Object.prototype.hasOwnProperty.call(badge, 'workingAtHeights')
-          ? badge.workingAtHeights
-          : false
-      },
-      enumerable: true
-    });
+    if (badge.firstAid) converted.firstAid.push(name);
+    if (badge.fireMarshal) converted.fireMarshal.push(name);
+    if (badge.workingAtHeights) converted.workingAtHeight.push(name);
   }
 
-  return normalised;
+  return converted;
+}
+
+function normaliseSafetyBadges(badges) {
+  if (!isPlainObject(badges)) {
+    throw new Error('Safety badges must be an object');
+  }
+
+  return isCanonicalSafetyBadgePayload(badges)
+    ? normaliseCanonicalSafetyBadges(badges)
+    : normaliseLegacySafetyBadges(badges);
+}
+
+function safetyBadgeCount(badges) {
+  return new Set(SAFETY_BADGE_FIELDS.flatMap((field) => badges[field])).size;
 }
 
 // Routes
@@ -328,7 +393,7 @@ app.get('/api/safety-badges', async (req, res) => {
     res.json({
       version: safetyBadges ? safetyBadges.version : null,
       updated_at: safetyBadges ? safetyBadges.updated_at : null,
-      badges: safetyBadges ? safetyBadges.badges : {}
+      badges: safetyBadges ? normaliseSafetyBadges(safetyBadges.badges) : emptySafetyBadges()
     });
   } catch (err) {
     console.error('Error fetching current safety badges:', err);
@@ -346,12 +411,12 @@ app.put('/api/admin/safety-badges', authenticateAdmin, async (req, res) => {
        VALUES (1, $1, $2::jsonb, CURRENT_TIMESTAMP)
        ON CONFLICT (id) DO UPDATE
        SET version = EXCLUDED.version, badges = EXCLUDED.badges, updated_at = EXCLUDED.updated_at
-       RETURNING version, updated_at`,
+       RETURNING version, updated_at, badges`,
       [version, JSON.stringify(badges)]
     );
     res.json({
       ...result.rows[0],
-      badge_count: Object.keys(badges).length
+      badge_count: safetyBadgeCount(badges)
     });
   } catch (err) {
     if (
