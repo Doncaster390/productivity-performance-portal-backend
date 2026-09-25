@@ -69,6 +69,14 @@ async function initializeDatabase() {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
       )
     `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS current_safety_badges (
+        id SMALLINT PRIMARY KEY CHECK (id = 1),
+        version UUID NOT NULL,
+        badges JSONB NOT NULL DEFAULT '{}'::jsonb,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
     console.log('Database initialized successfully');
   } catch (err) {
     console.error('Error initializing database:', err);
@@ -172,6 +180,60 @@ function normaliseScheduleRows(rows) {
   return rows.map(normaliseScheduleRow);
 }
 
+function isPlainObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function normaliseSafetyBadges(badges) {
+  if (!isPlainObject(badges)) {
+    throw new Error('Safety badges must be an object');
+  }
+
+  const entries = Object.entries(badges);
+  if (entries.length > 10000) {
+    throw new Error('A safety badge upload cannot contain more than 10,000 employees');
+  }
+
+  const normalised = Object.create(null);
+  const allowedFields = ['firstAid', 'fireMarshal', 'workingAtHeights'];
+
+  for (const [employeeName, badge] of entries) {
+    const name = employeeName.trim();
+    if (!name || name.length > 255) {
+      throw new Error('Each safety badge employee name must be between 1 and 255 characters');
+    }
+    if (Object.prototype.hasOwnProperty.call(normalised, name)) {
+      throw new Error('Safety badge employee names must be unique after trimming');
+    }
+    if (!isPlainObject(badge)) {
+      throw new Error('Each safety badge must be an object');
+    }
+
+    const fields = Object.keys(badge);
+    if (fields.some((field) => !allowedFields.includes(field))) {
+      throw new Error('Safety badges may only contain firstAid, fireMarshal, and workingAtHeights');
+    }
+    if (fields.some((field) => typeof badge[field] !== 'boolean')) {
+      throw new Error('Safety badge values must be booleans');
+    }
+
+    Object.defineProperty(normalised, name, {
+      value: {
+        firstAid: Object.prototype.hasOwnProperty.call(badge, 'firstAid') ? badge.firstAid : false,
+        fireMarshal: Object.prototype.hasOwnProperty.call(badge, 'fireMarshal') ? badge.fireMarshal : false,
+        workingAtHeights: Object.prototype.hasOwnProperty.call(badge, 'workingAtHeights')
+          ? badge.workingAtHeights
+          : false
+      },
+      enumerable: true
+    });
+  }
+
+  return normalised;
+}
+
 // Routes
 
 // Admin Login
@@ -251,6 +313,58 @@ app.put('/api/admin/schedule', authenticateAdmin, async (req, res) => {
       return res.status(400).json({ error: err.message });
     }
     console.error('Error replacing current schedule:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get the current safety badges (public for embedded displays)
+app.get('/api/safety-badges', async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT version, badges, updated_at FROM current_safety_badges WHERE id = 1'
+    );
+    const safetyBadges = result.rows[0];
+    res.set('Cache-Control', 'no-store');
+    res.json({
+      version: safetyBadges ? safetyBadges.version : null,
+      updated_at: safetyBadges ? safetyBadges.updated_at : null,
+      badges: safetyBadges ? safetyBadges.badges : {}
+    });
+  } catch (err) {
+    console.error('Error fetching current safety badges:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Replace the current safety badges (admin only)
+app.put('/api/admin/safety-badges', authenticateAdmin, async (req, res) => {
+  try {
+    const badges = normaliseSafetyBadges(req.body && req.body.badges);
+    const version = randomUUID();
+    const result = await pool.query(
+      `INSERT INTO current_safety_badges (id, version, badges, updated_at)
+       VALUES (1, $1, $2::jsonb, CURRENT_TIMESTAMP)
+       ON CONFLICT (id) DO UPDATE
+       SET version = EXCLUDED.version, badges = EXCLUDED.badges, updated_at = EXCLUDED.updated_at
+       RETURNING version, updated_at`,
+      [version, JSON.stringify(badges)]
+    );
+    res.json({
+      ...result.rows[0],
+      badge_count: Object.keys(badges).length
+    });
+  } catch (err) {
+    if (
+      err.message &&
+      (
+        err.message.startsWith('Safety badge') ||
+        err.message.startsWith('A safety badge') ||
+        err.message.startsWith('Each safety badge')
+      )
+    ) {
+      return res.status(400).json({ error: err.message });
+    }
+    console.error('Error replacing current safety badges:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
