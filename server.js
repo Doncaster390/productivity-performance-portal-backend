@@ -3,7 +3,8 @@ const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
 const jwt = require('jsonwebtoken');
-const { randomUUID } = require('crypto');
+const bcrypt = require('bcryptjs');
+const { createHash, randomBytes, randomUUID, timingSafeEqual } = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -77,28 +78,187 @@ async function initializeDatabase() {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
       )
     `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id UUID PRIMARY KEY,
+        email VARCHAR(254) NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        role VARCHAR(16) NOT NULL DEFAULT 'viewer' CHECK (role IN ('admin', 'viewer')),
+        status VARCHAR(16) NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending', 'approved', 'rejected', 'revoked')),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS display_credentials (
+        id UUID PRIMARY KEY,
+        name VARCHAR(100) NOT NULL,
+        token_hash VARCHAR(64),
+        setup_code_hash VARCHAR(64),
+        setup_expires_at TIMESTAMPTZ,
+        setup_used_at TIMESTAMPTZ,
+        scope VARCHAR(32) NOT NULL CHECK (scope = 'dashboard:read'),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        revoked_at TIMESTAMPTZ
+      )
+    `);
     console.log('Database initialized successfully');
   } catch (err) {
     console.error('Error initializing database:', err);
+    throw err;
   }
 }
 
-// JWT Middleware
-const authenticateAdmin = (req, res, next) => {
-  const token = req.headers.authorization?.split(' ')[1];
-  
-  if (!token) {
-    return res.status(401).json({ error: 'No token provided' });
+let databaseInitialization;
+function ensureDatabaseInitialized() {
+  if (!databaseInitialization) {
+    databaseInitialization = initializeDatabase().catch((err) => {
+      databaseInitialization = null;
+      throw err;
+    });
+  }
+  return databaseInitialization;
+}
+
+app.use(async (req, res, next) => {
+  try {
+    await ensureDatabaseInitialized();
+    return next();
+  } catch (err) {
+    console.error('Database initialization failed:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+function publicUser(user) {
+  return {
+    id: user.id,
+    email: user.email,
+    role: user.role,
+    status: user.status,
+    created_at: user.created_at,
+    updated_at: user.updated_at
+  };
+}
+
+async function authenticate(req, res, next) {
+  const authorization = req.headers.authorization || '';
+  const match = authorization.match(/^Bearer\s+(\S+)$/i);
+  if (!match) {
+    return res.status(401).json({ error: 'Bearer token required' });
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.admin = decoded;
-    next();
+    const decoded = jwt.verify(match[1], process.env.JWT_SECRET);
+    if (!decoded || typeof decoded !== 'object') {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+    if (decoded.type === 'bootstrap' || (!decoded.type && decoded.admin === true && !decoded.sub)) {
+      req.user = {
+        id: null,
+        email: process.env.ADMIN_USERNAME,
+        role: 'admin',
+        status: 'approved',
+        bootstrap: true
+      };
+      return next();
+    }
+    if (decoded.type === 'display') {
+      return res.status(403).json({ error: 'Display credentials are read-only' });
+    }
+
+    if (
+      decoded.type !== 'account' ||
+      typeof decoded.sub !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(decoded.sub)
+    ) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    const result = await pool.query(
+      'SELECT id, email, role, status FROM users WHERE id = $1',
+      [decoded.sub]
+    );
+    const user = result.rows[0];
+    if (!user || user.status !== 'approved') {
+      return res.status(403).json({ error: 'Account access is not approved' });
+    }
+    req.user = { ...user, bootstrap: false };
+    return next();
   } catch (err) {
-    return res.status(403).json({ error: 'Invalid token' });
+    if (err.name === 'JsonWebTokenError' || err.name === 'TokenExpiredError') {
+      return res.status(401).json({ error: 'Invalid or expired token' });
+    }
+    console.error('Error authenticating request:', err);
+    return res.status(500).json({ error: 'Server error' });
   }
-};
+}
+
+function authenticateAdmin(req, res, next) {
+  return authenticate(req, res, (err) => {
+    if (err) return next(err);
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+    req.admin = req.user;
+    return next();
+  });
+}
+
+async function authenticateDashboardRead(req, res, next) {
+  const authorization = req.headers.authorization || '';
+  const match = authorization.match(/^Bearer\s+(\S+)$/i);
+  if (!match) {
+    return res.status(401).json({ error: 'Bearer token required' });
+  }
+
+  let decoded;
+  try {
+    decoded = jwt.verify(match[1], process.env.JWT_SECRET);
+  } catch (err) {
+    if (err.name === 'JsonWebTokenError' || err.name === 'TokenExpiredError') {
+      return res.status(401).json({ error: 'Invalid or expired token' });
+    }
+    console.error('Error verifying display credential:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+
+  if (!decoded || typeof decoded !== 'object' || decoded.type !== 'display') {
+    return authenticate(req, res, next);
+  }
+  if (
+    decoded.scope !== 'dashboard:read' ||
+    typeof decoded.jti !== 'string' ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(decoded.jti)
+  ) {
+    return res.status(401).json({ error: 'Invalid display credential' });
+  }
+
+  try {
+    const result = await pool.query(
+      'SELECT token_hash, scope, revoked_at FROM display_credentials WHERE id = $1',
+      [decoded.jti]
+    );
+    const credential = result.rows[0];
+    const tokenHash = createHash('sha256').update(match[1]).digest();
+    if (
+      !credential ||
+      credential.revoked_at ||
+      credential.scope !== decoded.scope ||
+      typeof credential.token_hash !== 'string' ||
+      !/^[0-9a-f]{64}$/i.test(credential.token_hash) ||
+      !timingSafeEqual(tokenHash, Buffer.from(credential.token_hash, 'hex'))
+    ) {
+      return res.status(403).json({ error: 'Display credential is revoked or invalid' });
+    }
+    req.user = { id: decoded.jti, role: 'display', scope: decoded.scope, bootstrap: false };
+    return next();
+  } catch (err) {
+    console.error('Error authenticating display credential:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+}
 
 function normaliseDate(value) {
   const input = String(value || '').trim();
@@ -301,10 +461,104 @@ function safetyBadgeCount(badges) {
 
 // Routes
 
+function validEmail(value) {
+  return typeof value === 'string' &&
+    value.length <= 254 &&
+    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function issueAccountToken(user) {
+  return jwt.sign(
+    { type: 'account', sub: user.id },
+    process.env.JWT_SECRET,
+    { expiresIn: '24h' }
+  );
+}
+
+// Request account access
+app.post('/api/auth/register', async (req, res) => {
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const password = req.body?.password;
+  if (!validEmail(email)) {
+    return res.status(400).json({ error: 'A valid email address is required' });
+  }
+  if (
+    typeof password !== 'string' ||
+    password.length < 8 ||
+    Buffer.byteLength(password, 'utf8') > 72
+  ) {
+    return res.status(400).json({ error: 'Password must be at least 8 characters and at most 72 bytes' });
+  }
+
+  try {
+    const passwordHash = await bcrypt.hash(password, 12);
+    const result = await pool.query(
+      `INSERT INTO users (id, email, password_hash, role, status)
+       VALUES ($1, $2, $3, 'viewer', 'pending')
+       RETURNING status`,
+      [randomUUID(), email, passwordHash]
+    );
+    res.set('Cache-Control', 'no-store');
+    return res.status(201).json({
+      status: result.rows[0].status,
+      message: 'Access request submitted and awaiting admin approval'
+    });
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'An account or access request already exists for this email' });
+    }
+    console.error('Error registering account:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Account Login
+app.post('/api/auth/login', async (req, res) => {
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const password = req.body?.password;
+  if (!validEmail(email) || typeof password !== 'string') {
+    return res.status(400).json({ error: 'Valid email and password are required' });
+  }
+
+  try {
+    const result = await pool.query(
+      'SELECT id, email, password_hash, role, status FROM users WHERE email = $1',
+      [email]
+    );
+    const user = result.rows[0];
+    if (!user || !(await bcrypt.compare(password, user.password_hash))) {
+      return res.status(401).json({ error: 'Incorrect email or password' });
+    }
+    if (user.status !== 'approved') {
+      return res.status(403).json({
+        error: user.status === 'pending'
+          ? 'Access request is awaiting admin approval'
+          : 'Account access is not approved',
+        status: user.status
+      });
+    }
+
+    res.set('Cache-Control', 'no-store');
+    return res.json({
+      token: issueAccountToken(user),
+      user: publicUser(user)
+    });
+  } catch (err) {
+    console.error('Error logging in account:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Current account identity
+app.get('/api/auth/me', authenticate, (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json(req.user);
+});
+
 // Admin Login
 app.post('/api/admin/login', async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const { username, password } = req.body || {};
     
     if (!username || !password) {
       return res.status(400).json({ error: 'Username and password required' });
@@ -316,14 +570,28 @@ app.post('/api/admin/login', async (req, res) => {
       console.error('ADMIN_USERNAME or ADMIN_PIN is not configured');
       return res.status(500).json({ error: 'Admin login is not configured' });
     }
+    if (!process.env.JWT_SECRET) {
+      console.error('JWT_SECRET is not configured');
+      return res.status(500).json({ error: 'Admin login is not configured' });
+    }
     
     if (username === adminUsername && password === adminPin) {
       const token = jwt.sign(
-        { admin: true, timestamp: Date.now() },
+        { type: 'bootstrap', admin: true, timestamp: Date.now() },
         process.env.JWT_SECRET,
         { expiresIn: '24h' }
       );
-      return res.json({ token });
+      res.set('Cache-Control', 'no-store');
+      return res.json({
+        token,
+        user: {
+          id: null,
+          email: adminUsername,
+          role: 'admin',
+          status: 'approved',
+          bootstrap: true
+        }
+      });
     } else {
       return res.status(401).json({ error: 'Incorrect password' });
     }
@@ -333,8 +601,8 @@ app.post('/api/admin/login', async (req, res) => {
   }
 });
 
-// Get the current schedule (public for embedded displays)
-app.get('/api/schedule', async (req, res) => {
+// Get the current schedule
+app.get('/api/schedule', authenticateDashboardRead, async (req, res) => {
   try {
     const result = await pool.query(
       'SELECT version, rows, updated_at FROM current_schedule WHERE id = 1'
@@ -382,8 +650,8 @@ app.put('/api/admin/schedule', authenticateAdmin, async (req, res) => {
   }
 });
 
-// Get the current safety badges (public for embedded displays)
-app.get('/api/safety-badges', async (req, res) => {
+// Get the current safety badges
+app.get('/api/safety-badges', authenticateDashboardRead, async (req, res) => {
   try {
     const result = await pool.query(
       'SELECT version, badges, updated_at FROM current_safety_badges WHERE id = 1'
@@ -431,6 +699,312 @@ app.put('/api/admin/safety-badges', authenticateAdmin, async (req, res) => {
     }
     console.error('Error replacing current safety badges:', err);
     res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Review and manage account access
+app.post('/api/admin/display-credentials', authenticateAdmin, async (req, res) => {
+  const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+  if (!name || name.length > 100) {
+    return res.status(400).json({ error: 'A display name between 1 and 100 characters is required' });
+  }
+
+  const id = randomUUID();
+  const setupCode = randomBytes(32).toString('base64url');
+  const setupCodeHash = createHash('sha256').update(setupCode).digest('hex');
+  try {
+    const result = await pool.query(
+      `INSERT INTO display_credentials (id, name, setup_code_hash, setup_expires_at, scope)
+       VALUES ($1, $2, $3, CURRENT_TIMESTAMP + INTERVAL '10 minutes', 'dashboard:read')
+       RETURNING id, name, scope, created_at, setup_expires_at, revoked_at`,
+      [id, name, setupCodeHash]
+    );
+    res.set('Cache-Control', 'no-store');
+    return res.status(201).json({ ...result.rows[0], setup_code: setupCode });
+  } catch (err) {
+    console.error('Error creating display credential:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/display-credentials/exchange', async (req, res) => {
+  const setupCode = typeof req.body?.code === 'string' ? req.body.code : '';
+  if (!/^[A-Za-z0-9_-]{43}$/.test(setupCode)) {
+    return res.status(400).json({ error: 'A valid display setup code is required' });
+  }
+
+  let client;
+  try {
+    client = await pool.connect();
+    await client.query('BEGIN');
+    const setupCodeHash = createHash('sha256').update(setupCode).digest('hex');
+    const result = await client.query(
+      `SELECT id, scope
+       FROM display_credentials
+       WHERE setup_code_hash = $1
+         AND setup_used_at IS NULL
+         AND setup_expires_at > CURRENT_TIMESTAMP
+         AND revoked_at IS NULL
+       FOR UPDATE`,
+      [setupCodeHash]
+    );
+    const credential = result.rows[0];
+    if (!credential || credential.scope !== 'dashboard:read') {
+      await client.query('ROLLBACK');
+      return res.status(401).json({ error: 'Display setup code is invalid, expired, or already used' });
+    }
+
+    const token = jwt.sign(
+      { type: 'display', scope: credential.scope, jti: credential.id },
+      process.env.JWT_SECRET
+    );
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+    await client.query(
+      `UPDATE display_credentials
+       SET token_hash = $1, setup_code_hash = NULL, setup_expires_at = NULL,
+           setup_used_at = CURRENT_TIMESTAMP
+       WHERE id = $2`,
+      [tokenHash, credential.id]
+    );
+    await client.query('COMMIT');
+    res.set('Cache-Control', 'no-store');
+    return res.json({ token, scope: credential.scope, displayId: credential.id });
+  } catch (err) {
+    if (client) await client.query('ROLLBACK');
+    console.error('Error exchanging display setup code:', err);
+    return res.status(500).json({ error: 'Server error' });
+  } finally {
+    if (client) client.release();
+  }
+});
+
+app.get('/api/admin/display-credentials', authenticateAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, name, scope, created_at, revoked_at,
+              (token_hash IS NOT NULL) AS activated,
+              (setup_code_hash IS NOT NULL AND setup_expires_at > CURRENT_TIMESTAMP) AS setup_pending
+       FROM display_credentials
+       ORDER BY created_at DESC`
+    );
+    res.set('Cache-Control', 'no-store');
+    return res.json({ credentials: result.rows });
+  } catch (err) {
+    console.error('Error listing display credentials:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.delete('/api/admin/display-credentials/:id', authenticateAdmin, async (req, res) => {
+  const { id } = req.params;
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
+    return res.status(400).json({ error: 'A valid display credential ID is required' });
+  }
+
+  try {
+    const result = await pool.query(
+      `UPDATE display_credentials
+       SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP)
+       WHERE id = $1
+       RETURNING id, name, scope, created_at, revoked_at`,
+      [id]
+    );
+    if (!result.rows.length) {
+      return res.status(404).json({ error: 'Display credential not found' });
+    }
+    return res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Error revoking display credential:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.get('/api/admin/users', authenticateAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, email, role, status, created_at, updated_at
+       FROM users
+       ORDER BY created_at ASC`
+    );
+    res.set('Cache-Control', 'no-store');
+    res.json({ users: result.rows.map(publicUser) });
+  } catch (err) {
+    console.error('Error fetching users:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.patch('/api/admin/users/:id', authenticateAdmin, async (req, res) => {
+  const { id } = req.params;
+  const changes = req.body;
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
+    return res.status(400).json({ error: 'A valid user ID is required' });
+  }
+  if (!isPlainObject(changes)) {
+    return res.status(400).json({ error: 'User changes must be an object' });
+  }
+  const fields = Object.keys(changes);
+  if (
+    !fields.length ||
+    fields.some((field) => !['status', 'role'].includes(field)) ||
+    (Object.prototype.hasOwnProperty.call(changes, 'status') &&
+      !['approved', 'rejected', 'revoked'].includes(changes.status)) ||
+    (Object.prototype.hasOwnProperty.call(changes, 'role') &&
+      !['admin', 'viewer'].includes(changes.role))
+  ) {
+    return res.status(400).json({
+      error: 'Provide status (approved, rejected, or revoked) and/or role (admin or viewer)'
+    });
+  }
+
+  const assignments = [];
+  const values = [];
+  for (const field of ['status', 'role']) {
+    if (Object.prototype.hasOwnProperty.call(changes, field)) {
+      values.push(changes[field]);
+      assignments.push(`${field} = $${values.length}`);
+    }
+  }
+  values.push(id);
+
+  try {
+    const result = await pool.query(
+      `UPDATE users
+       SET ${assignments.join(', ')}, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $${values.length}
+       RETURNING id, email, role, status, created_at, updated_at`,
+      values
+    );
+    if (!result.rows.length) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    return res.json(publicUser(result.rows[0]));
+  } catch (err) {
+    console.error('Error updating user access:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Keep employee changes in shared schedule and badge data.
+app.patch('/api/people/:name', authenticate, async (req, res) => {
+  const name = typeof req.params.name === 'string' ? req.params.name.trim() : '';
+  const role = req.body?.role;
+  if (!name || name.length > 255) {
+    return res.status(400).json({ error: 'A valid employee name is required' });
+  }
+  if (typeof role !== 'string' || !role.trim() || role.trim().length > 255) {
+    return res.status(400).json({ error: 'A core skill between 1 and 255 characters is required' });
+  }
+
+  let client;
+  try {
+    client = await pool.connect();
+    await client.query('BEGIN');
+    const scheduleResult = await client.query(
+      'SELECT version, rows FROM current_schedule WHERE id = 1 FOR UPDATE'
+    );
+    const schedule = scheduleResult.rows[0];
+    if (!schedule || !Array.isArray(schedule.rows)) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Employee not found' });
+    }
+    const matchingRows = schedule.rows.filter(
+      (row) => typeof row.name === 'string' && row.name.trim().toLowerCase() === name.toLowerCase()
+    );
+    if (!matchingRows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Employee not found' });
+    }
+    const rows = schedule.rows.map((row) =>
+      typeof row.name === 'string' && row.name.trim().toLowerCase() === name.toLowerCase()
+        ? { ...row, role: role.trim() }
+        : row
+    );
+    const version = randomUUID();
+    const updateResult = await client.query(
+      `UPDATE current_schedule
+       SET version = $1, rows = $2::jsonb, updated_at = CURRENT_TIMESTAMP
+       WHERE id = 1
+       RETURNING updated_at`,
+      [version, JSON.stringify(rows)]
+    );
+    await client.query('COMMIT');
+    return res.json({
+      version,
+      updated_at: updateResult.rows[0].updated_at,
+      rows_updated: matchingRows.length
+    });
+  } catch (err) {
+    if (client) await client.query('ROLLBACK');
+    console.error('Error updating employee skill:', err);
+    return res.status(500).json({ error: 'Server error' });
+  } finally {
+    if (client) client.release();
+  }
+});
+
+app.delete('/api/people/:name', authenticate, async (req, res) => {
+  const name = typeof req.params.name === 'string' ? req.params.name.trim() : '';
+  if (!name || name.length > 255) {
+    return res.status(400).json({ error: 'A valid employee name is required' });
+  }
+
+  let client;
+  try {
+    client = await pool.connect();
+    await client.query('BEGIN');
+    const scheduleResult = await client.query(
+      'SELECT version, rows FROM current_schedule WHERE id = 1 FOR UPDATE'
+    );
+    const schedule = scheduleResult.rows[0];
+    if (!schedule || !Array.isArray(schedule.rows)) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Employee not found' });
+    }
+    const rows = schedule.rows.filter(
+      (row) => typeof row.name !== 'string' || row.name.trim().toLowerCase() !== name.toLowerCase()
+    );
+    const rowsRemoved = schedule.rows.length - rows.length;
+    if (!rowsRemoved) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Employee not found' });
+    }
+
+    const version = randomUUID();
+    const updateResult = await client.query(
+      `UPDATE current_schedule
+       SET version = $1, rows = $2::jsonb, updated_at = CURRENT_TIMESTAMP
+       WHERE id = 1
+       RETURNING updated_at`,
+      [version, JSON.stringify(rows)]
+    );
+    const badgesResult = await client.query(
+      'SELECT badges FROM current_safety_badges WHERE id = 1 FOR UPDATE'
+    );
+    if (badgesResult.rows.length) {
+      const badges = normaliseSafetyBadges(badgesResult.rows[0].badges);
+      for (const field of SAFETY_BADGE_FIELDS) {
+        badges[field] = badges[field].filter((employee) => employee.toLowerCase() !== name.toLowerCase());
+      }
+      await client.query(
+        `UPDATE current_safety_badges
+         SET version = $1, badges = $2::jsonb, updated_at = CURRENT_TIMESTAMP
+         WHERE id = 1`,
+        [randomUUID(), JSON.stringify(badges)]
+      );
+    }
+    await client.query('COMMIT');
+    return res.json({
+      version,
+      updated_at: updateResult.rows[0].updated_at,
+      rows_removed: rowsRemoved
+    });
+  } catch (err) {
+    if (client) await client.query('ROLLBACK');
+    console.error('Error removing employee:', err);
+    return res.status(500).json({ error: 'Server error' });
+  } finally {
+    if (client) client.release();
   }
 });
 
@@ -531,7 +1105,7 @@ app.get('/api/health', (req, res) => {
 // Start Server
 async function startServer() {
   try {
-    await initializeDatabase();
+    await ensureDatabaseInitialized();
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
     });
@@ -541,4 +1115,9 @@ async function startServer() {
   }
 }
 
-startServer();
+if (require.main === module) {
+  startServer();
+}
+
+module.exports = app;
+module.exports.pool = pool;
