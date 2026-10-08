@@ -794,12 +794,12 @@ app.patch('/api/admin/users/:id', authenticateAdmin, async (req, res) => {
     !fields.length ||
     fields.some((field) => !['status', 'role'].includes(field)) ||
     (Object.prototype.hasOwnProperty.call(changes, 'status') &&
-      !['approved', 'rejected', 'revoked'].includes(changes.status)) ||
+      !['pending', 'approved', 'rejected', 'revoked'].includes(changes.status)) ||
     (Object.prototype.hasOwnProperty.call(changes, 'role') &&
       !['admin', 'viewer'].includes(changes.role))
   ) {
     return res.status(400).json({
-      error: 'Provide status (approved, rejected, or revoked) and/or role (admin or viewer)'
+      error: 'Provide status (pending, approved, rejected, or revoked) and/or role (admin or viewer)'
     });
   }
 

@@ -18,7 +18,7 @@ authentication.
 | `GET /api/auth/me` | Approved account or bootstrap admin | Returns the current `{ id, email, role, status, bootstrap }` identity. |
 | `POST /api/admin/login` | Public | Exchanges `ADMIN_USERNAME` and `ADMIN_PIN` for a 24-hour bootstrap admin token. |
 | `GET /api/admin/users` | Admin | Returns `{ "users": [...] }` without password hashes. |
-| `PATCH /api/admin/users/:id` | Admin | Set `status` to `approved`, `rejected`, or `revoked`, and/or `role` to `admin` or `viewer`. |
+| `PATCH /api/admin/users/:id` | Admin | Set `status` to `pending`, `approved`, `rejected`, or `revoked`, and/or `role` to `admin` or `viewer`. |
 | `POST /api/admin/display-credentials` | Admin | Create a named kiosk credential; returns a one-time setup code. |
 | `POST /api/display-credentials/exchange` | Public, setup code required | Exchange `{ "code" }` once for `{ "token", "scope", "displayId" }`. |
 | `GET /api/admin/display-credentials` | Admin | List display credential metadata without hashes, setup codes, or bearer tokens. |
