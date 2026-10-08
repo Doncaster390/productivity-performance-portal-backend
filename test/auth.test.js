@@ -224,18 +224,27 @@ function auth(token) {
   return { Authorization: `Bearer ${token}` };
 }
 
-test('schedule and safety badge reads are not public', async () => {
+test('schedule and safety badge reads are public and not cached', async () => {
   dbCalls.length = 0;
   const schedule = await fetch(`${baseUrl}/api/schedule`);
   const badges = await fetch(`${baseUrl}/api/safety-badges`);
-  assert.equal(schedule.status, 401);
-  assert.equal(badges.status, 401);
+  const scheduleBody = await schedule.json();
+  const badgesBody = await badges.json();
+
+  assert.equal(schedule.status, 200);
+  assert.deepEqual(Object.keys(scheduleBody).sort(), ['rows', 'updated_at', 'version']);
+  assert.equal(scheduleBody.rows[0].name, 'Ada Lovelace');
+  assert.equal(schedule.headers.get('cache-control'), 'no-store');
+  assert.equal(badges.status, 200);
+  assert.deepEqual(Object.keys(badgesBody).sort(), ['badges', 'updated_at', 'version']);
+  assert.deepEqual(badgesBody.badges, { firstAid: [], fireMarshal: [], workingAtHeight: [] });
+  assert.equal(badges.headers.get('cache-control'), 'no-store');
   assert.equal(
     dbCalls.some((query) =>
       query.startsWith('SELECT version, rows') ||
       query.startsWith('SELECT version, badges')
     ),
-    false
+    true
   );
 });
 
@@ -248,16 +257,24 @@ test('approved viewer can read shared data but cannot upload', async () => {
     headers: { ...auth(token), 'Content-Type': 'application/json' },
     body: JSON.stringify({ rows: [] })
   });
+  const badgeUpload = await fetch(`${baseUrl}/api/admin/safety-badges`, {
+    method: 'PUT',
+    headers: { ...auth(token), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ badges: { firstAid: [], fireMarshal: [], workingAtHeight: [] } })
+  });
 
   assert.equal(schedule.status, 200);
   assert.equal((await schedule.json()).rows[0].name, 'Ada Lovelace');
   assert.equal(badges.status, 200);
   assert.equal(upload.status, 403);
+  assert.equal(badgeUpload.status, 403);
 });
 
 test('revoked account is denied even when its token claims admin role', async () => {
-  const response = await fetch(`${baseUrl}/api/schedule`, {
-    headers: auth(tokenFor(revokedViewerId, 'admin'))
+  const response = await fetch(`${baseUrl}/api/people/Ada%20Lovelace`, {
+    method: 'PATCH',
+    headers: { ...auth(tokenFor(revokedViewerId, 'admin')), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role: 'Problem Solver' })
   });
   assert.equal(response.status, 403);
   assert.match((await response.json()).error, /not approved/i);

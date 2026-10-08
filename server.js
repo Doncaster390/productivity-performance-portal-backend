@@ -206,60 +206,6 @@ function authenticateAdmin(req, res, next) {
   });
 }
 
-async function authenticateDashboardRead(req, res, next) {
-  const authorization = req.headers.authorization || '';
-  const match = authorization.match(/^Bearer\s+(\S+)$/i);
-  if (!match) {
-    return res.status(401).json({ error: 'Bearer token required' });
-  }
-
-  let decoded;
-  try {
-    decoded = jwt.verify(match[1], process.env.JWT_SECRET);
-  } catch (err) {
-    if (err.name === 'JsonWebTokenError' || err.name === 'TokenExpiredError') {
-      return res.status(401).json({ error: 'Invalid or expired token' });
-    }
-    console.error('Error verifying display credential:', err);
-    return res.status(500).json({ error: 'Server error' });
-  }
-
-  if (!decoded || typeof decoded !== 'object' || decoded.type !== 'display') {
-    return authenticate(req, res, next);
-  }
-  if (
-    decoded.scope !== 'dashboard:read' ||
-    typeof decoded.jti !== 'string' ||
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(decoded.jti)
-  ) {
-    return res.status(401).json({ error: 'Invalid display credential' });
-  }
-
-  try {
-    const result = await pool.query(
-      'SELECT token_hash, scope, revoked_at FROM display_credentials WHERE id = $1',
-      [decoded.jti]
-    );
-    const credential = result.rows[0];
-    const tokenHash = createHash('sha256').update(match[1]).digest();
-    if (
-      !credential ||
-      credential.revoked_at ||
-      credential.scope !== decoded.scope ||
-      typeof credential.token_hash !== 'string' ||
-      !/^[0-9a-f]{64}$/i.test(credential.token_hash) ||
-      !timingSafeEqual(tokenHash, Buffer.from(credential.token_hash, 'hex'))
-    ) {
-      return res.status(403).json({ error: 'Display credential is revoked or invalid' });
-    }
-    req.user = { id: decoded.jti, role: 'display', scope: decoded.scope, bootstrap: false };
-    return next();
-  } catch (err) {
-    console.error('Error authenticating display credential:', err);
-    return res.status(500).json({ error: 'Server error' });
-  }
-}
-
 function normaliseDate(value) {
   const input = String(value || '').trim();
   const isoMatch = input.match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -602,7 +548,7 @@ app.post('/api/admin/login', async (req, res) => {
 });
 
 // Get the current schedule
-app.get('/api/schedule', authenticateDashboardRead, async (req, res) => {
+app.get('/api/schedule', async (req, res) => {
   try {
     const result = await pool.query(
       'SELECT version, rows, updated_at FROM current_schedule WHERE id = 1'
@@ -651,7 +597,7 @@ app.put('/api/admin/schedule', authenticateAdmin, async (req, res) => {
 });
 
 // Get the current safety badges
-app.get('/api/safety-badges', authenticateDashboardRead, async (req, res) => {
+app.get('/api/safety-badges', async (req, res) => {
   try {
     const result = await pool.query(
       'SELECT version, badges, updated_at FROM current_safety_badges WHERE id = 1'
