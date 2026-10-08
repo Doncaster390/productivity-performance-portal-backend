@@ -374,6 +374,17 @@ test('registration creates a pending account and never returns a token or hash',
 test('admin approval grants the stored role and account login returns a token', async () => {
   const pendingUser = [...users.values()].find((item) => item.email === 'new.user@example.com');
   const adminToken = jwt.sign({ type: 'bootstrap', admin: true }, process.env.JWT_SECRET, { expiresIn: '1h' });
+  const resetStatus = await fetch(`${baseUrl}/api/admin/users/${pendingUser.id}`, {
+    method: 'PATCH',
+    headers: { ...auth(adminToken), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: 'pending', role: 'viewer' })
+  });
+  assert.equal(resetStatus.status, 200);
+  assert.deepEqual(
+    (({ status, role }) => ({ status, role }))(await resetStatus.json()),
+    { status: 'pending', role: 'viewer' }
+  );
+
   const update = await fetch(`${baseUrl}/api/admin/users/${pendingUser.id}`, {
     method: 'PATCH',
     headers: { ...auth(adminToken), 'Content-Type': 'application/json' },
